@@ -1,0 +1,139 @@
+"""
+Data loading utilities for MATH-500, GSM8K, and AIME-2024 datasets.
+"""
+
+import json
+import os
+import re
+from typing import List, Dict
+
+# Configure HuggingFace mirror for users behind the Great Firewall
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+# Resolve project root relative to this file
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
+
+
+def _get_data_path(*parts: str) -> str:
+    """Get path relative to project data directory."""
+    return os.path.join(_DATA_DIR, *parts)
+
+
+def extract_math_answer(text: str) -> str:
+    """Extract answer from MATH dataset solution text."""
+    boxed_match = re.search(r'\\boxed\{([^}]+)\}', text)
+    if boxed_match:
+        return boxed_match.group(1).strip()
+    return text.strip()
+
+
+def load_math500() -> List[Dict]:
+    """Load MATH-500 dataset from local file or Hugging Face."""
+    local_path = _get_data_path("MATH-500", "test.json")
+    if os.path.exists(local_path):
+        with open(local_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            for item in data:
+                if 'solution' in item and 'answer' not in item:
+                    item['answer'] = extract_math_answer(item['solution'])
+            return data
+
+    # Fallback: try loading from Hugging Face
+    try:
+        from datasets import load_dataset
+        dataset = load_dataset("hendrycks/competition_math", split="test")
+        samples = []
+        for item in dataset:
+            samples.append({
+                "problem": item["problem"],
+                "answer": extract_math_answer(item["solution"]),
+                "level": item.get("level", ""),
+                "type": item.get("type", "")
+            })
+        return samples[:500]
+    except Exception as e:
+        print(f"[WARNING] Could not load MATH-500 from HuggingFace: {e}")
+        print("[WARNING] Please run: python scripts/download_data.py")
+        return []
+
+
+def load_gsm8k() -> List[Dict]:
+    """Load GSM8K test set from local file or Hugging Face."""
+    local_path = _get_data_path("GSM8K", "test.json")
+    if os.path.exists(local_path):
+        with open(local_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data
+
+    # Fallback: try loading from Hugging Face
+    try:
+        from datasets import load_dataset
+        dataset = load_dataset("gsm8k", "main", split="test")
+        samples = []
+        for item in dataset:
+            answer_text = item["answer"]
+            if "####" in answer_text:
+                answer = answer_text.split("####")[-1].strip()
+            else:
+                answer = answer_text
+            samples.append({
+                "problem": item["question"],
+                "answer": answer
+            })
+
+        # Save to local for future use
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(samples, f, indent=2, ensure_ascii=False)
+
+        return samples
+    except Exception as e:
+        print(f"[WARNING] Could not load GSM8K from HuggingFace: {e}")
+        print("[WARNING] Please run: python scripts/download_data.py")
+        return []
+
+
+def load_aime2024() -> List[Dict]:
+    """Load AIME 2024 problems from local file."""
+    local_path = _get_data_path("AIME-2024", "aime2024.json")
+    if os.path.exists(local_path):
+        with open(local_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    print(f"[WARNING] AIME-2024 data not found at {local_path}")
+    print("[WARNING] Please download manually and place at data/AIME-2024/aime2024.json")
+    return []
+
+
+def load_dataset_by_name(name: str) -> List[Dict]:
+    """Load dataset by name."""
+    name_lower = name.lower().replace("-", "").replace("_", "")
+    loaders = {
+        "math500": load_math500,
+        "gsm8k": load_gsm8k,
+        "aime2024": load_aime2024,
+        "math": load_math500,
+    }
+
+    loader = None
+    for key, fn in loaders.items():
+        if name_lower.startswith(key) or key.startswith(name_lower):
+            loader = fn
+            break
+
+    if loader is None:
+        raise ValueError(
+            f"Unknown dataset: '{name}'. "
+            f"Available datasets: {list(loaders.keys())}"
+        )
+
+    data = loader()
+    if not data:
+        raise RuntimeError(
+            f"Failed to load dataset '{name}'. "
+            f"Please ensure data files exist or run: python scripts/download_data.py"
+        )
+
+    return data
